@@ -10,10 +10,10 @@ the function body and replaces it with a function pointer to one of the
 functions in the generated file. You must `#define NESTED_FUNCTION_NAME` at the
 top of each source file so that the functions can be uniquely identified.
 
-The script attempts to preserve whitespace and comments in nested functions
-and each function name contains the line number from the source file to make
-debugging easier. The generated file also includes header guards, and the
-script will print a warning to stderr if `NESTED_FUNCTION_NAME` is not defined.
+The script preserves the original whitespace and comments in nested functions,
+and emits `#line` directives so that compiler errors refer to the source location.
+The generated file also includes header guards, and the script will print a
+warning to stderr if `NESTED_FUNCTION_NAME` is not defined.
 
 Note that nested functions are not lambdas. They do not capture enclosing
 scope so you must provide any context that is needed via function arguments.
@@ -23,10 +23,10 @@ This preprocessor script is MIT licensed, authored by Chris Patuzzo, 2026.
 **Example usage:**
 
 ```c
+#include "my_nested_functions.c"
 #include <stdio.h>
 
 #define NESTED_FUNCTION_NAME nested_function_src_main
-#include "my_nested_functions.c"
 
 int main(void) {
     void *fn = NESTED_FUNCTION(int, (int a, int b), {
@@ -61,12 +61,18 @@ The sum is 7.
 #define NESTED_FUNCTION(return_type, params, ...) _NESTED_FUNCTION_CONCAT(NESTED_FUNCTION_NAME, _line_, __LINE__)
 #endif // NESTED_FUNCTION
 
-static int nested_function_src_main_line_7(int a, int b) {
-    return a + b; // Add two numbers.
+#line 7 "src/main.c"
+static int nested_function_src_main_line_9(int a, int b) {
+#line 8 "src/main.c"
+        return a + b; // Add two numbers.
 }
 
 #endif // NESTED_FUNCTIONS_SRC_MAIN
 ```
+
+Note that "line_9" refers to the closing line of the nested function. You
+should use the same compiler for running the preprocessor and compiling your
+program to avoid any differences in how the `__LINE__` macro is evaluated.
 
 ## License
 

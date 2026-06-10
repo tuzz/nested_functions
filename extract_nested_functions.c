@@ -10,10 +10,10 @@
 // functions in the generated file. You must #define NESTED_FUNCTION_NAME at the
 // top of each source file so that the functions can be uniquely identified.
 //
-// The script attempts to preserve whitespace and comments in nested functions
-// and each function name contains the line number from the source file to make
-// debugging easier. The generated file also includes header guards, and the
-// script will print a warning to stderr if NESTED_FUNCTION_NAME is not defined.
+// The script preserves the original whitespace and comments in nested functions,
+// and emits #line directives so that compiler errors refer to the source location.
+// The generated file also includes header guards, and the script will print a
+// warning to stderr if NESTED_FUNCTION_NAME is not defined.
 //
 // Note that nested functions are not lambdas. They do not capture enclosing
 // scope so you must provide any context that is needed via function arguments.
@@ -55,12 +55,18 @@
 // #define NESTED_FUNCTION(return_type, params, ...) _NESTED_FUNCTION_CONCAT(NESTED_FUNCTION_NAME, _line_, __LINE__)
 // #endif // NESTED_FUNCTION
 //
-// static int nested_function_src_main_line_7(int a, int b) {
-//     return a + b; // Add two numbers.
+// #line 7 "src/main.c"
+// static int nested_function_src_main_line_9(int a, int b) {
+// #line 8 "src/main.c"
+//         return a + b; // Add two numbers.
 // }
 //
 // #endif // NESTED_FUNCTIONS_SRC_MAIN
 // ```
+//
+// Note that "line_9" refers to the closing line of the nested function. You
+// should use the same compiler for running the preprocessor and compiling your
+// program to avoid any differences in how the __LINE__ macro is evaluated.
 
 #include <ctype.h>
 #include <stdio.h>
@@ -199,89 +205,22 @@ static void to_upper(char *s) {
   for (; *s; s++) *s = toupper((unsigned char)*s);
 }
 
-// Trims leading newlines and trailing whitespace from a range in buf. Both
-// *start and *end are updated. After trimming, buf[*start..*end) contains
-// the body content without surrounding blank lines.
+// Trims leading blank lines and trailing whitespace from a range in buf. Both
+// *start and *end are updated. The leading trim only steps over \n and \r, so
+// the first surviving line keeps its original indentation.
 static void trim_body(const char *buf, int *start, int *end) {
   while (*start < *end && (buf[*start] == '\n' || buf[*start] == '\r')) (*start)++;
   while (*end > *start && (buf[*end - 1] == '\n' || buf[*end - 1] == '\r' || buf[*end - 1] == ' ' || buf[*end - 1] == '\t')) (*end)--;
 }
 
-// Returns the minimum indentation across all non-empty lines in buf[start..end).
-// Empty (all-whitespace) lines are excluded. This is the common leading
-// whitespace that will be stripped from every line when dedenting.
-static int find_min_indent(const char *buf, int start, int end) {
-  int min_indent = end - start;
-  int i = start;
-
-  while (i < end) {
-    int line_start = i;
-    while (i < end && buf[i] != '\n') i++;
-
-    int indent = 0;
-    int j = line_start;
-    while (j < i && (buf[j] == ' ' || buf[j] == '\t')) { indent++; j++; }
-
-    int is_empty = (j == i);
-    if (!is_empty && indent < min_indent) min_indent = indent;
-
-    if (i < end) i++;
-  }
-
-  return min_indent;
-}
-
-// Indent detection: builds a histogram of non-zero leading whitespace counts
-// across all dedented function bodies. Called during the first pass over
-// each file. The most common non-zero count becomes the output indent.
+// Writes the function body to stdout, preserving the original source spacing.
+// We deliberately do NOT dedent: the #line directives emitted alongside the
+// body make the compiler report errors against the source, and keeping the
+// original leading whitespace means the reported column matches the source too.
+// trim_body strips surrounding blank lines so the generated function doesn't
+// gain a stray blank line right after { or before }.
 //
-// Example: if most indented lines have 2 spaces after dedenting, the output
-// functions will be indented with 2 spaces.
-static int indent_histogram[256];
-
-static void count_body_indents(const char *buf, int start, int end) {
-  trim_body(buf, &start, &end);
-  if (start >= end) return;
-
-  int min_indent = find_min_indent(buf, start, end);
-  int i = start;
-
-  while (i < end) {
-    int line_start = i;
-    while (i < end && buf[i] != '\n') i++;
-
-    int indent = 0;
-    int j = line_start;
-    while (j < i && (buf[j] == ' ' || buf[j] == '\t')) { indent++; j++; }
-
-    int is_empty = (j == i);
-    int dedented = indent - min_indent;
-    if (!is_empty && dedented > 0 && dedented < 256) indent_histogram[dedented]++;
-
-    if (i < end) i++;
-  }
-}
-
-// Returns the most common non-zero indent level. Ties are broken by picking
-// the smallest value. If no indented lines were found, returns 4 (a safe default).
-static int determine_indent(void) {
-  int best_count = 0;
-  int best_indent = 4;
-
-  for (int i = 1; i < 256; i++) {
-    if (indent_histogram[i] > best_count || (indent_histogram[i] == best_count && indent_histogram[i] > 0 && i < best_indent)) {
-      best_count = indent_histogram[i];
-      best_indent = i;
-    }
-  }
-
-  return best_indent;
-}
-
-// Writes the function body to stdout with common leading whitespace removed
-// and re-indented by indent_size spaces. Trims leading and trailing blank lines.
-//
-// Example input (4-space indent in source, inside entity_create):
+// Example input (inside entity_create, 8-space body indent in source):
 //
 //   NESTED_FUNCTION(void, (int x), {
 //       printf("hello\n");
@@ -290,7 +229,7 @@ static int determine_indent(void) {
 //       }
 //   })
 //
-// With indent_size=4, output:
+// Output (indentation preserved verbatim):
 //
 //   static void nested_function_test_line_57(int x) {
 //       printf("hello\n");
@@ -298,25 +237,16 @@ static int determine_indent(void) {
 //           printf("world\n");
 //       }
 //   }
-static void write_dedented_body(const char *buf, int start, int end, int indent_size) {
+static void write_body(const char *buf, int start, int end) {
   trim_body(buf, &start, &end);
   if (start >= end) return;
 
-  int min_indent = find_min_indent(buf, start, end);
   int i = start;
-
   while (i < end) {
     int line_start = i;
     while (i < end && buf[i] != '\n') i++;
 
-    int line_len = i - line_start;
-    int skip = (line_len > min_indent) ? min_indent : line_len;
-
-    int actual_skip = 0;
-    while (actual_skip < skip && (buf[line_start + actual_skip] == ' ' || buf[line_start + actual_skip] == '\t')) actual_skip++;
-
-    for (int s = 0; s < indent_size; s++) fputc(' ', stdout);
-    fwrite(&buf[line_start + actual_skip], 1, line_len - actual_skip, stdout);
+    fwrite(&buf[line_start], 1, i - line_start, stdout);
     fputc('\n', stdout);
 
     if (i < end) i++;
@@ -363,20 +293,20 @@ static void detect_function_name(const char *path) {
   }
 }
 
-// Reads a file and scans for NESTED_FUNCTION blocks. In SCAN_COUNT_INDENTS
-// mode, accumulates indent statistics without writing anything. In SCAN_EMIT
-// mode, writes the extracted functions to stdout with the given indent.
-typedef enum { SCAN_COUNT_INDENTS, SCAN_EMIT } ScanMode;
 static int total_function_count;
 
-static int scan_file(const char *path, ScanMode mode, int indent_size) {
+// Reads a file and scans for NESTED_FUNCTION blocks, extracting each into a
+// top-level static function written to stdout. Each function is preceded by
+// #line directives so the compiler reports errors against the original source
+// file, line and column rather than the generated file.
+static int scan_file(const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) { fprintf(stderr, "Failed to open %s\n", path); return 1; }
   file_size = fread(file_content, 1, MAX_FILE_SIZE - 1, f);
   file_content[file_size] = '\0';
   fclose(f);
 
-  if (mode == SCAN_EMIT) detect_function_name(path);
+  detect_function_name(path);
 
   const char *token = "NESTED_FUNCTION(";
   int token_len = strlen(token);
@@ -389,6 +319,7 @@ static int scan_file(const char *path, ScanMode mode, int indent_size) {
     if (peek() == '#') { skip_preprocessor_directive(); continue; }
 
     if (cursor + token_len <= file_size && memcmp(&file_content[cursor], token, token_len) == 0) {
+      int fn_line = line; // Source line of the NESTED_FUNCTION( token; anchors the generated signature below.
       cursor += token_len;
 
       // Extract the return type: NESTED_FUNCTION(>void<, ...)
@@ -414,24 +345,36 @@ static int scan_file(const char *path, ScanMode mode, int indent_size) {
       skip_whitespace();
       if (peek() != '{') { fprintf(stderr, "%s:%d: expected '{' for function body\n", path, line); return 1; }
       advance();
+      int body_brace_line = line; // Source line of the body's opening brace; anchors the body below.
       int body_start = cursor;
       find_balanced('{', '}');
       int body_end = cursor - 1;
 
-      if (mode == SCAN_COUNT_INDENTS) {
-        count_body_indents(file_content, body_start, body_end);
-      } else {
-        fputc('\n', stdout);
-
-        fprintf(stdout, "static ");
-        fwrite(&file_content[type_start], 1, type_end - type_start, stdout);
-        fprintf(stdout, " %s_line_%d(", function_name, line);
-        fwrite(&file_content[params_start], 1, params_end - params_start, stdout);
-        fprintf(stdout, ") {\n");
-        write_dedented_body(file_content, body_start, body_end, indent_size);
-        fprintf(stdout, "}\n");
-        total_function_count++;
+      // trim_body (in write_body) skips leading blank lines by stepping over \n
+      // and \r, so count those same characters here to find the source line of
+      // the first line we'll actually emit. The two #line directives below then
+      // map the signature and the body back to the source for the compiler.
+      int body_first_line = body_brace_line;
+      for (int k = body_start; k < body_end && (file_content[k] == '\n' || file_content[k] == '\r'); k++) {
+        if (file_content[k] == '\n') body_first_line++;
       }
+
+      fputc('\n', stdout);
+
+      // Anchor the signature to the NESTED_FUNCTION( line, then the body to its first line.
+      // Two directives (not one) keep both exact even when the NESTED_FUNCTION(...) header
+      // spans multiple lines before the opening brace.
+      fprintf(stdout, "#line %d \"%s\"\n", fn_line, path);
+      fprintf(stdout, "static ");
+      fwrite(&file_content[type_start], 1, type_end - type_start, stdout);
+      fprintf(stdout, " %s_line_%d(", function_name, line);
+      fwrite(&file_content[params_start], 1, params_end - params_start, stdout);
+      fprintf(stdout, ") {\n");
+
+      fprintf(stdout, "#line %d \"%s\"\n", body_first_line, path);
+      write_body(file_content, body_start, body_end);
+      fprintf(stdout, "}\n");
+      total_function_count++;
 
       file_function_count++;
       continue;
@@ -440,7 +383,7 @@ static int scan_file(const char *path, ScanMode mode, int indent_size) {
     advance();
   }
 
-  if (mode == SCAN_EMIT && file_function_count > 0 && !function_name_was_explicit) {
+  if (file_function_count > 0 && !function_name_was_explicit) {
     fprintf(stderr, "WARNING: %s has %d nested function(s) but no '#define NESTED_FUNCTION_NAME ...'\n", path, file_function_count);
     fprintf(stderr, "  defaulting to: %s\n", function_name);
     fprintf(stderr, "  add '#define NESTED_FUNCTION_NAME %s' to the top of the file\n", function_name);
@@ -451,14 +394,6 @@ static int scan_file(const char *path, ScanMode mode, int indent_size) {
 
 int main(int argc, char **argv) {
   if (argc < 2) { fprintf(stderr, "Usage: ./extract_nested_functions.c <file1.c> ...\n"); return 1; }
-
-  // First pass: detect indent level from all files.
-  for (int i = 1; i < argc; i++) {
-    int result = scan_file(argv[i], SCAN_COUNT_INDENTS, 0);
-    if (result) return result;
-  }
-
-  int indent_size = determine_indent();
 
   // Header guard derived from the first input file.
   char guard[512];
@@ -477,9 +412,9 @@ int main(int argc, char **argv) {
   fprintf(stdout, "#define NESTED_FUNCTION(return_type, params, ...) _NESTED_FUNCTION_CONCAT(NESTED_FUNCTION_NAME, _line_, __LINE__)\n");
   fprintf(stdout, "#endif // NESTED_FUNCTION\n");
 
-  // Second pass: extract and emit functions from all files.
+  // Extract and emit functions from all files.
   for (int i = 1; i < argc; i++) {
-    int result = scan_file(argv[i], SCAN_EMIT, indent_size);
+    int result = scan_file(argv[i]);
     if (result) return result;
   }
 
